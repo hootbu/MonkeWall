@@ -1099,7 +1099,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.config.lockScreenVideo else { return }
-            AerialsManager.shared.repairRegistrationIfNeeded()
+            _ = AerialsManager.shared.refresh()
         }
         refreshWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)

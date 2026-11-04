@@ -143,16 +143,6 @@ final class AerialsManager {
         return true
     }
 
-    func repairRegistrationIfNeeded() {
-        guard fileManager.fileExists(atPath: installedVideoURL.path),
-              !entriesContainAsset(),
-              updateEntries() else { return }
-        if currentIdleAssetID() == assetID || currentDesktopAssetID() == assetID {
-            restartWallpaperAgent()
-        }
-        appLog("Aerials: registration repaired")
-    }
-
     @discardableResult
     func remove() -> Bool {
         let idleWasOurs = currentIdleAssetID() == assetID
