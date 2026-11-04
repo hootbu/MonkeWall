@@ -38,7 +38,7 @@ macOS duvar kağıdı olarak yalnızca Apple'ın kendi aerial videolarını oyna
 
 ## Kurulum
 
-Henüz hazır indirme yok, kendiniz derliyorsunuz. Apple Silicon bir Mac'te macOS 13 veya üzeri, bir de Xcode ya da Command Line Tools gerekir.
+Henüz hazır indirme yok, kendiniz derliyorsunuz. Apple Silicon bir Mac'te macOS 13 veya üzeri, bir de Xcode gerekir.
 
 ```bash
 git clone https://github.com/hootbu/MonkeWall.git
@@ -124,7 +124,7 @@ macOS will only play Apple's own aerial videos as your wallpaper. MonkeWall play
 
 ## Install
 
-There is no pre-built download yet, so you build it yourself. You need macOS 13 or later on Apple Silicon, plus Xcode or the Command Line Tools.
+There is no pre-built download yet, so you build it yourself. You need macOS 13 or later on Apple Silicon, plus Xcode.
 
 ```bash
 git clone https://github.com/hootbu/MonkeWall.git
