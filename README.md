@@ -11,7 +11,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white" alt="macOS 13+">
   <img src="https://img.shields.io/badge/Swift-native-F05138?logo=swift&logoColor=white" alt="Native Swift">
-  <img src="https://img.shields.io/badge/dependencies-none-2E7D32" alt="No dependencies">
   <img src="https://img.shields.io/badge/status-hobby%20project-lightgrey" alt="Hobby project">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey" alt="License: all rights reserved">
 </p>
@@ -35,10 +34,26 @@ macOS duvar kağıdı olarak yalnızca Apple'ın kendi aerial videolarını oyna
 - Gösterildiği masaüstleri tamamen kapanınca videoyu duraklatır. Ekran uyuyunca ya da Mac kilitlenince hepsi durur.
 - İsterseniz pilde, Düşük Güç Modu'nda ya da başka bir uygulama öndeyken de duraklar.
 - macOS dilinizi izler: Türkçe ya da İngilizce.
+- Yeni sürüm çıkınca haber verir, onayınızla kendini günceller.
 
 ## Kurulum
 
-Henüz hazır indirme yok, kendiniz derliyorsunuz. Apple Silicon bir Mac'te macOS 13 veya üzeri, bir de Xcode gerekir.
+Apple Silicon bir Mac'te macOS 13 veya üzeri gerekir.
+
+1. [Releases](https://github.com/hootbu/MonkeWall/releases/latest) sayfasından zip dosyasını indirip açın.
+2. `MonkeWall.app`'i Uygulamalar klasörüne taşıyın.
+3. Açmayı deneyin. MonkeWall notarize olmadığı için macOS ilk açılışı engeller.
+4. Sistem Ayarları > Gizlilik ve Güvenlik bölümünde **Yine de Aç** düğmesine basın.
+
+Bu düğme çıkmazsa Terminal'de şunu çalıştırıp yeniden açın:
+
+```bash
+xattr -cr /Applications/MonkeWall.app
+```
+
+İlk açılışta kendini giriş öğelerine ekler, bunu Ayarlar'dan kapatabilirsiniz.
+
+Kaynaktan derlemek isterseniz Xcode gerekir:
 
 ```bash
 git clone https://github.com/hootbu/MonkeWall.git
@@ -46,8 +61,6 @@ cd MonkeWall
 ./build.sh
 open MonkeWall.app
 ```
-
-`/Applications` klasöründe durmasını isterseniz `MonkeWall.app`'i açmadan önce oraya taşıyın. İlk açılışta kendini giriş öğelerine ekler, bunu Ayarlar'dan kapatabilirsiniz.
 
 ## Kullanım
 
@@ -77,13 +90,13 @@ Yalnızca bu uygulamanın dilini değiştirmek için Sistem Ayarları > Genel > 
 
 **Videolar yer kaplar.** Her video `~/Library/Application Support/MonkeWall` altına kopyalanır. Kilit ekranı için ayrıca dakikası 150 MB'a varan 4K HEVC bir kopya üretilir.
 
-**Notarize değildir.** Derleme ad-hoc imzalıdır. Derlendiği Mac'te çalışır, başka bir Mac'e kopyalarsanız Gatekeeper engeller.
+**İnternete yalnızca güncelleme için çıkar.** Günde bir kez GitHub'dan yeni sürüm var mı diye bakar, bunu Ayarlar'dan kapatabilirsiniz. Videolarınız Mac'inizden çıkmaz. Güncellemeler [Sparkle](https://sparkle-project.org) ile imzalı olarak gelir, indirilen dosyanın imzası tutmazsa kurulmaz.
 
 ## Kaldırma
 
 **Ayarlar… > Hakkında > MonkeWall'u Kaldır…** önceki duvar kağıdınızı geri getirir, videoları ve ayarları siler, uygulamayı Çöp Kutusu'na taşır.
 
-Aynı temizliği terminalden de yapabilirsiniz, bu yol uygulamayı yerinde bırakır:
+Kaynaktan derlediyseniz aynı temizliği terminalden de yapabilirsiniz, bu yol uygulamayı yerinde bırakır:
 
 ```bash
 ./uninstall.sh
@@ -121,10 +134,26 @@ macOS will only play Apple's own aerial videos as your wallpaper. MonkeWall play
 - Pauses a video once the desktops showing it are fully covered. Everything stops when the display sleeps or the Mac locks.
 - Can also pause on battery, in Low Power Mode, or whenever another app is in front.
 - Follows your macOS language: English or Turkish.
+- Tells you when a new version is out and updates itself with your OK.
 
 ## Install
 
-There is no pre-built download yet, so you build it yourself. You need macOS 13 or later on Apple Silicon, plus Xcode.
+You need macOS 13 or later on Apple Silicon.
+
+1. Download the zip from [Releases](https://github.com/hootbu/MonkeWall/releases/latest) and open it.
+2. Move `MonkeWall.app` to your Applications folder.
+3. Try to open it. MonkeWall isn't notarized, so macOS blocks the first launch.
+4. Go to System Settings > Privacy & Security and click **Open Anyway**.
+
+If that button doesn't appear, run this in Terminal and open it again:
+
+```bash
+xattr -cr /Applications/MonkeWall.app
+```
+
+It adds itself to your login items on first launch. You can turn that off in Settings.
+
+To build from source, you need Xcode:
 
 ```bash
 git clone https://github.com/hootbu/MonkeWall.git
@@ -132,8 +161,6 @@ cd MonkeWall
 ./build.sh
 open MonkeWall.app
 ```
-
-If you want it in `/Applications`, move `MonkeWall.app` there before opening it. It adds itself to your login items on first launch. You can turn that off in Settings.
 
 ## Using it
 
@@ -163,13 +190,13 @@ To change the language for this app alone, use System Settings > General > Langu
 
 **Videos take up space.** Each one is copied into `~/Library/Application Support/MonkeWall`, and the lock screen gets its own 4K HEVC copy of up to 150 MB per minute of video.
 
-**It isn't notarized.** The build is ad-hoc signed. It runs on the Mac that built it, and Gatekeeper blocks it if you copy it to another Mac.
+**It only goes online for updates.** Once a day it asks GitHub whether there's a new version, and you can turn that off in Settings. Your videos never leave your Mac. Updates arrive signed through [Sparkle](https://sparkle-project.org), and a download whose signature doesn't match won't install.
 
 ## Uninstall
 
 **Settings… > About > Uninstall MonkeWall…** brings your previous wallpaper back, deletes the videos and settings, and moves the app to the Trash.
 
-You can do the same cleanup from the terminal, which leaves the app where it is:
+If you built from source, you can do the same cleanup from the terminal, which leaves the app where it is:
 
 ```bash
 ./uninstall.sh
