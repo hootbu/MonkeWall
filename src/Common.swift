@@ -16,6 +16,18 @@ let logURL = FileManager.default
     .appendingPathComponent("Logs", isDirectory: true)
     .appendingPathComponent("MonkeWall.log")
 
+let legacyLaunchAgentURL = FileManager.default
+    .urls(for: .libraryDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("LaunchAgents/com.hootbu.monkewall.plist")
+
+func L(_ key: String) -> String {
+    NSLocalizedString(key, comment: "")
+}
+
+func videoCountText(_ count: Int) -> String {
+    String(format: L(count == 1 ? "1 video" : "%lld videos"), count)
+}
+
 private let logLock = NSLock()
 
 func appLog(_ message: String) {

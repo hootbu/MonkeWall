@@ -19,6 +19,7 @@ final class AerialsManager {
     private let categoryID = "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D"
     private let subcategoryID = "B2C3D4E5-F6A7-4B8C-9D0E-1F2A3B4C5D6E"
     private let displayName = "MonkeWall"
+    private let thumbnailQueue = DispatchQueue(label: "com.hootbu.monkewall.thumbnail", qos: .utility)
 
     private var backupDirectory: URL {
         supportDirectory.appendingPathComponent("backup", isDirectory: true)
@@ -65,7 +66,7 @@ final class AerialsManager {
     }
 
     @discardableResult
-    func install(videoURL: URL, force: Bool = false) -> Bool {
+    func install(videoURL: URL, force: Bool = false, select: Bool = true) -> Bool {
         guard fileManager.fileExists(atPath: videoURL.path) else {
             appLog("Aerials: source video missing at \(videoURL.path)")
             return false
@@ -78,7 +79,7 @@ final class AerialsManager {
                 at: entriesURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            backupIfNeeded()
+            backupCurrentSelection()
 
             let sourceSize = fileSize(videoURL)
             let installedSize = fileSize(installedVideoURL)
@@ -91,7 +92,9 @@ final class AerialsManager {
                     try fileManager.removeItem(at: installedVideoURL)
                 }
                 try fileManager.copyItem(at: videoURL, to: installedVideoURL)
-                generateThumbnail(from: videoURL, to: thumbnailURL)
+                thumbnailQueue.async {
+                    self.generateThumbnail(from: videoURL, to: self.thumbnailURL)
+                }
                 appLog("Aerials: video copied (\(sourceSize) bytes)")
             }
 
@@ -99,11 +102,12 @@ final class AerialsManager {
 
             let alreadySelected = currentIdleAssetID() == assetID
                 && currentDesktopAssetID() == assetID
-            if !alreadySelected {
+            let shouldSelect = select && !alreadySelected
+            if shouldSelect {
                 guard updateStore() else { return false }
             }
 
-            if videoChanged || !alreadySelected {
+            if videoChanged || shouldSelect {
                 restartWallpaperAgent()
             }
 
@@ -113,6 +117,10 @@ final class AerialsManager {
             appLog("Aerials: install failed: \(error)")
             return false
         }
+    }
+
+    func waitForThumbnail() {
+        thumbnailQueue.sync {}
     }
 
     @discardableResult
@@ -125,13 +133,24 @@ final class AerialsManager {
         if !entriesContainAsset() {
             _ = updateEntries()
         }
-        if currentIdleAssetID() != assetID || currentDesktopAssetID() != assetID {
-            _ = updateStore()
+
+        guard currentIdleAssetID() == assetID || currentDesktopAssetID() == assetID else {
+            return true
         }
 
         restartWallpaperAgent()
         appLog("Aerials: refreshed")
         return true
+    }
+
+    func repairRegistrationIfNeeded() {
+        guard fileManager.fileExists(atPath: installedVideoURL.path),
+              !entriesContainAsset(),
+              updateEntries() else { return }
+        if currentIdleAssetID() == assetID || currentDesktopAssetID() == assetID {
+            restartWallpaperAgent()
+        }
+        appLog("Aerials: registration repaired")
     }
 
     @discardableResult
@@ -152,30 +171,45 @@ final class AerialsManager {
 
         restartWallpaperAgent()
         appLog("Aerials: removed (idleWasOurs=\(idleWasOurs), desktopWasOurs=\(desktopWasOurs), stillInUse=\(stillInUse))")
-        return true
+        return !stillInUse
     }
 
     // MARK: - Backups
 
-    private func backupIfNeeded() {
+    private func loadBackup() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: storeBackupURL),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [], format: nil
+              ) else { return nil }
+        return plist as? [String: Any]
+    }
+
+    private func backupCurrentSelection() {
         try? fileManager.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
-        guard !fileManager.fileExists(atPath: storeBackupURL.path),
-              fileManager.fileExists(atPath: storeURL.path) else { return }
+        guard let store = loadStore() else { return }
+
+        var backup = loadBackup() ?? store
+        for scopeKey in ["AllSpacesAndDisplays", "SystemDefault"] {
+            guard let scope = store[scopeKey] as? [String: Any] else { continue }
+            var backupScope = backup[scopeKey] as? [String: Any] ?? [:]
+            for partKey in ["Desktop", "Idle"] where assetID(from: scope, key: partKey) != assetID {
+                backupScope[partKey] = scope[partKey]
+            }
+            backup[scopeKey] = backupScope
+        }
+
         do {
-            try fileManager.copyItem(at: storeURL, to: storeBackupURL)
-            appLog("Aerials: wallpaper store backed up")
+            let data = try PropertyListSerialization.data(
+                fromPropertyList: backup, format: .binary, options: 0
+            )
+            try data.write(to: storeBackupURL, options: .atomic)
         } catch {
             appLog("Aerials: could not back up wallpaper store: \(error)")
         }
     }
 
     private func restoreWallpaperFromBackup() {
-        guard let backupData = try? Data(contentsOf: storeBackupURL),
-              let backupPlist = try? PropertyListSerialization.propertyList(
-                  from: backupData, options: [], format: nil
-              ),
-              let backup = backupPlist as? [String: Any],
-              var store = loadStore() else {
+        guard let backup = loadBackup(), var store = loadStore() else {
             appLog("Aerials: no usable wallpaper-store backup")
             return
         }

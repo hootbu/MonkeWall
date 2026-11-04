@@ -21,10 +21,15 @@ struct WallpaperItem: Codable, Identifiable, Equatable {
 private struct LibraryIndex: Codable {
     var activeID: String?
     var items: [WallpaperItem]
+    var screenAssignments: [String: String]?
 }
 
 private final class LibraryImageBox: @unchecked Sendable {
     var image: CGImage?
+}
+
+private enum LibraryImportError: Error {
+    case unplayable
 }
 
 // MARK: - Library
@@ -38,12 +43,14 @@ final class WallpaperLibrary: ObservableObject {
     @Published private(set) var thumbnails: [String: NSImage] = [:]
     @Published private(set) var preparingIDs: Set<String> = []
     @Published private(set) var isImporting = false
+    @Published private(set) var screenAssignments: [String: String] = [:]
 
     let directory: URL
 
     private let root: URL
     private let indexURL: URL
     private let fileManager = FileManager.default
+    private var transcodes: [String: LockVideoEncoder] = [:]
 
     init(root: URL) {
         self.root = root
@@ -120,17 +127,11 @@ final class WallpaperLibrary: ObservableObject {
 
     // MARK: Import
 
-    func importVideos(_ urls: [URL], completion: @escaping ([WallpaperItem]) -> Void = { _ in }) {
-        let candidates = urls.filter(isMovie)
-        guard !candidates.isEmpty else {
-            completion([])
-            return
-        }
-
+    func importVideos(_ urls: [URL], completion: @escaping ([WallpaperItem], [String]) -> Void) {
         let known = Set(items.map { fileURL(for: $0).standardizedFileURL })
-        let newURLs = candidates.filter { !known.contains($0.standardizedFileURL) }
+        let newURLs = urls.filter { !known.contains($0.standardizedFileURL) }
         guard !newURLs.isEmpty else {
-            completion([])
+            completion([], [])
             return
         }
 
@@ -138,11 +139,13 @@ final class WallpaperLibrary: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             var imported: [WallpaperItem] = []
+            var rejected: [String] = []
 
             for url in newURLs {
                 do {
                     imported.append(try self.importFile(at: url, move: false))
                 } catch {
+                    rejected.append(url.lastPathComponent)
                     appLog("Library: import failed for \(url.path): \(error)")
                 }
             }
@@ -156,12 +159,16 @@ final class WallpaperLibrary: ObservableObject {
                 if !imported.isEmpty {
                     self.save()
                 }
-                completion(imported)
+                completion(imported, rejected)
             }
         }
     }
 
     private func importFile(at source: URL, move: Bool) throws -> WallpaperItem {
+        guard isPlayableVideo(source) else {
+            throw LibraryImportError.unplayable
+        }
+
         let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension.lowercased()
         let id = UUID().uuidString
         let destination = directory.appendingPathComponent("\(id).\(ext)")
@@ -210,7 +217,29 @@ final class WallpaperLibrary: ObservableObject {
         save()
     }
 
+    func assign(_ item: WallpaperItem, toScreen key: String) {
+        screenAssignments[key] = screenAssignments[key] == item.id ? nil : item.id
+        save()
+    }
+
+    func clearScreenAssignments() {
+        guard !screenAssignments.isEmpty else { return }
+        screenAssignments = [:]
+        save()
+    }
+
+    func nextItem(shuffled: Bool) -> WallpaperItem? {
+        let others = items.filter { $0.id != activeID }
+        if shuffled {
+            return others.randomElement()
+        }
+        guard !others.isEmpty else { return nil }
+        guard let index = items.firstIndex(where: { $0.id == activeID }) else { return items.first }
+        return items[(index + 1) % items.count]
+    }
+
     func remove(_ item: WallpaperItem) {
+        transcodes[item.id]?.cancel()
         try? fileManager.removeItem(at: fileURL(for: item))
         try? fileManager.removeItem(at: thumbnailURL(for: item))
         try? fileManager.removeItem(at: sidecarURL(for: item))
@@ -218,6 +247,7 @@ final class WallpaperLibrary: ObservableObject {
         items.removeAll { $0.id == item.id }
         thumbnails.removeValue(forKey: item.id)
         preparingIDs.remove(item.id)
+        screenAssignments = screenAssignments.filter { $0.value != item.id }
 
         if activeID == item.id {
             activeID = items.first?.id
@@ -229,6 +259,7 @@ final class WallpaperLibrary: ObservableObject {
     /// Deletes every library file, including thumbnails and 4K lock-screen
     /// sidecars, then writes an empty index. The app keeps running.
     func removeAll() {
+        cancelTranscodes()
         for item in items {
             try? fileManager.removeItem(at: fileURL(for: item))
             try? fileManager.removeItem(at: thumbnailURL(for: item))
@@ -247,6 +278,7 @@ final class WallpaperLibrary: ObservableObject {
         activeID = nil
         thumbnails = [:]
         preparingIDs = []
+        screenAssignments = [:]
         save()
         appLog("Library: all videos removed")
     }
@@ -263,9 +295,6 @@ final class WallpaperLibrary: ObservableObject {
 
     // MARK: Lock-screen sidecar
 
-    /// Generates the 4K HEVC 10-bit variant macOS prefers for aerials. Returns
-    /// nil when ffmpeg is unavailable or encoding fails; callers fall back to
-    /// the original file.
     func prepareLockSidecar(for item: WallpaperItem, completion: @escaping (URL?) -> Void) {
         let output = sidecarURL(for: item)
         if fileManager.fileExists(atPath: output.path) {
@@ -273,68 +302,44 @@ final class WallpaperLibrary: ObservableObject {
             return
         }
 
-        guard let ffmpeg = ffmpegPath else {
-            appLog("Library: ffmpeg not found, lock screen will use the source video")
-            completion(nil)
-            return
-        }
+        guard !preparingIDs.contains(item.id) else { return }
 
+        let partial = fileManager.temporaryDirectory.appendingPathComponent("\(item.id)-lock.mov")
+        try? fileManager.removeItem(at: partial)
+
+        let encoder = LockVideoEncoder()
         preparingIDs.insert(item.id)
-        let source = fileURL(for: item)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let succeeded = Self.transcodeLockVideo(source: source, output: output, ffmpeg: ffmpeg)
+        transcodes[item.id] = encoder
+        encoder.start(source: fileURL(for: item), destination: partial) { succeeded in
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.preparingIDs.remove(item.id)
-                if succeeded, self.fileManager.fileExists(atPath: output.path) {
-                    appLog("Library: lock-screen sidecar ready for \(item.file)")
-                    completion(output)
-                } else {
-                    appLog("Library: lock-screen sidecar failed for \(item.file)")
-                    completion(nil)
-                }
+                self.finishLockSidecar(for: item, partial: partial, succeeded: succeeded, completion: completion)
             }
         }
     }
 
-    private lazy var ffmpegPath: String? = {
-        let candidates = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg"
-        ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }()
+    func cancelTranscodes() {
+        transcodes.values.forEach { $0.cancel() }
+    }
 
-    private static func transcodeLockVideo(source: URL, output: URL, ffmpeg: String) -> Bool {
-        try? FileManager.default.removeItem(at: output)
+    private func finishLockSidecar(
+        for item: WallpaperItem,
+        partial: URL,
+        succeeded: Bool,
+        completion: (URL?) -> Void
+    ) {
+        transcodes[item.id] = nil
+        preparingIDs.remove(item.id)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpeg)
-        process.arguments = [
-            "-y", "-v", "error",
-            "-i", source.path,
-            "-vf", "scale=3840:2160:flags=lanczos,fps=60000/1001",
-            "-c:v", "hevc_videotoolbox",
-            "-b:v", "20M", "-maxrate", "35M",
-            "-pix_fmt", "p010le", "-tag:v", "hvc1",
-            "-movflags", "+faststart", "-an",
-            output.path
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            appLog("Library: ffmpeg could not start: \(error)")
-            return false
+        let output = sidecarURL(for: item)
+        let stillInLibrary = items.contains { $0.id == item.id }
+        if succeeded, stillInLibrary, (try? fileManager.moveItem(at: partial, to: output)) != nil {
+            appLog("Library: lock-screen sidecar ready for \(item.file)")
+            completion(output)
+        } else {
+            try? fileManager.removeItem(at: partial)
+            appLog("Library: lock-screen sidecar failed for \(item.file)")
+            completion(nil)
         }
-
-        process.waitUntilExit()
-        return process.terminationStatus == 0
-            && FileManager.default.fileExists(atPath: output.path)
     }
 
     // MARK: Thumbnails / metadata
@@ -392,6 +397,7 @@ final class WallpaperLibrary: ObservableObject {
         let valid = index.items.filter { fileManager.fileExists(atPath: fileURL(for: $0).path) }
         items = valid
         activeID = valid.contains(where: { $0.id == index.activeID }) ? index.activeID : valid.first?.id
+        screenAssignments = index.screenAssignments ?? [:]
         for item in valid {
             loadThumbnail(for: item)
         }
@@ -401,7 +407,7 @@ final class WallpaperLibrary: ObservableObject {
     }
 
     private func save() {
-        let index = LibraryIndex(activeID: activeID, items: items)
+        let index = LibraryIndex(activeID: activeID, items: items, screenAssignments: screenAssignments)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -411,8 +417,9 @@ final class WallpaperLibrary: ObservableObject {
 
     // MARK: Helpers
 
-    private func isMovie(_ url: URL) -> Bool {
-        ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
+    private func isPlayableVideo(_ url: URL) -> Bool {
+        let asset = AVURLAsset(url: url)
+        return asset.isPlayable && asset.tracks(withMediaType: .video).contains { $0.isPlayable }
     }
 
     private func fileSize(_ url: URL) -> Int {

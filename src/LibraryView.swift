@@ -9,6 +9,7 @@ struct LibraryView: View {
 
     let onAdd: () -> Void
     let onSelect: (WallpaperItem) -> Void
+    let onAssign: (WallpaperItem, String) -> Void
     let onReveal: (WallpaperItem) -> Void
     let onRemove: (WallpaperItem) -> Void
     let onDropVideos: ([URL]) -> Void
@@ -45,28 +46,31 @@ struct LibraryView: View {
             handleDrop(providers)
         }
         .alert(
-            "Videoyu tamamen sil?",
+            "Delete This Video?",
             isPresented: Binding(
                 get: { pendingRemoval != nil },
                 set: { if !$0 { pendingRemoval = nil } }
             )
         ) {
-            Button("Sil", role: .destructive) {
+            Button("Delete", role: .destructive) {
                 if let item = pendingRemoval {
                     pendingRemoval = nil
                     onRemove(item)
                 }
             }
-            Button("Vazgeç", role: .cancel) {
+            Button("Cancel", role: .cancel) {
                 pendingRemoval = nil
             }
         } message: {
             Text(pendingRemoval.map { item in
-                var message = "\"\(item.title)\" videosu, kapak görseli ve kilit ekranı için hazırlanan 4K kopyası diskten silinecek."
+                var message = String(
+                    format: L("\"%@\" and its thumbnail and 4K lock screen copy will be deleted from disk."),
+                    item.title
+                )
                 if library.items.count <= 1 {
-                    message += "\n\nBu son video. Silinince duvar kağıdı eski haline dönecek."
+                    message += "\n\n" + L("This is the last video. Deleting it brings back your previous wallpaper.")
                 }
-                message += "\n\nBu işlem geri alınamaz."
+                message += "\n\n" + L("This can't be undone.")
                 return message
             } ?? "")
         }
@@ -77,15 +81,15 @@ struct LibraryView: View {
     private var header: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Kütüphane")
+                Text("Library")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundStyle(BrandTheme.primaryText)
 
                 HStack(spacing: 6) {
-                    Text("\(library.items.count) video")
+                    Text(videoCountText(library.items.count))
                     if library.isImporting {
                         Text("·")
-                        Text("ekleniyor…")
+                        Text("adding…")
                     }
                 }
                 .font(.system(size: 12, weight: .medium))
@@ -101,7 +105,7 @@ struct LibraryView: View {
             }
 
             Button(action: onAdd) {
-                Label("Video Ekle", systemImage: "plus")
+                Label("Add Videos", systemImage: "plus")
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -109,7 +113,7 @@ struct LibraryView: View {
                     .foregroundStyle(Color.black.opacity(0.85))
             }
             .buttonStyle(.plain)
-            .help("Bilgisayarından bir veya birden fazla video ekle")
+            .help("Add one or more videos from your Mac")
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
@@ -132,7 +136,10 @@ struct LibraryView: View {
                                 thumbnail: library.thumbnails[item.id],
                                 isActive: library.activeID == item.id,
                                 isPreparing: library.preparingIDs.contains(item.id),
-                                isHovered: hoveredID == item.id
+                                isHovered: hoveredID == item.id,
+                                screenNames: NSScreen.screens
+                                    .filter { library.screenAssignments[$0.displayKey] == item.id }
+                                    .map(\.localizedName)
                             )
                             .onTapGesture {
                                 onSelect(item)
@@ -153,7 +160,7 @@ struct LibraryView: View {
                                         }
                                 }
                                 .buttonStyle(.plain)
-                                .help("Videoyu, kapağı ve kilit ekranı kopyasını sil")
+                                .help("Delete the video, thumbnail and lock screen copy")
                                 .padding(8)
                             }
                         }
@@ -165,14 +172,24 @@ struct LibraryView: View {
                             }
                         }
                         .contextMenu {
-                            Button("Duvar Kağıdı Yap") {
+                            Button("Set as Wallpaper") {
                                 onSelect(item)
                             }
-                            Button("Finder'da Göster") {
+                            if NSScreen.screens.count > 1 {
+                                Menu("Use on Screen") {
+                                    ForEach(NSScreen.screens, id: \.displayKey) { screen in
+                                        Toggle(screen.localizedName, isOn: Binding(
+                                            get: { library.screenAssignments[screen.displayKey] == item.id },
+                                            set: { _ in onAssign(item, screen.displayKey) }
+                                        ))
+                                    }
+                                }
+                            }
+                            Button("Show in Finder") {
                                 onReveal(item)
                             }
                             Divider()
-                            Button("Kütüphaneden Kaldır", role: .destructive) {
+                            Button("Remove from Library", role: .destructive) {
                                 pendingRemoval = item
                             }
                         }
@@ -189,16 +206,16 @@ struct LibraryView: View {
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(BrandTheme.accent.opacity(0.85))
 
-            Text("Henüz video yok")
+            Text("No videos yet")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(BrandTheme.primaryText)
 
-            Text("Videolarını bu pencereye sürükle veya Video Ekle'ye bas.")
+            Text("Drag videos into this window or click Add Videos.")
                 .font(.system(size: 13))
                 .foregroundStyle(BrandTheme.secondaryText)
 
             Button(action: onAdd) {
-                Label("Video Ekle", systemImage: "plus")
+                Label("Add Videos", systemImage: "plus")
                     .font(.system(size: 13, weight: .semibold))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 9)
@@ -262,6 +279,7 @@ private struct VideoCard: View {
     let isActive: Bool
     let isPreparing: Bool
     let isHovered: Bool
+    let screenNames: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -279,8 +297,13 @@ private struct VideoCard: View {
                     }
                     if isActive {
                         Text("·")
-                        Text("Aktif")
+                        Text("Active")
                             .foregroundStyle(BrandTheme.accent)
+                    }
+                    ForEach(screenNames, id: \.self) { name in
+                        Text("·")
+                        Text(name)
+                            .lineLimit(1)
                     }
                 }
                 .font(.system(size: 11, weight: .medium))
@@ -333,7 +356,7 @@ private struct VideoCard: View {
         }
         .overlay(alignment: .topTrailing) {
             if isActive {
-                Label("Kullanılıyor", systemImage: "checkmark")
+                Label("In Use", systemImage: "checkmark")
                     .font(.system(size: 9, weight: .bold))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
@@ -351,7 +374,7 @@ private struct VideoCard: View {
                         ProgressView()
                             .controlSize(.small)
                             .tint(.white)
-                        Text("Kilit ekranı hazırlanıyor…")
+                        Text("Preparing lock screen…")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(Color.white.opacity(0.9))
                     }
@@ -368,6 +391,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         library: WallpaperLibrary,
         onAdd: @escaping () -> Void,
         onSelect: @escaping (WallpaperItem) -> Void,
+        onAssign: @escaping (WallpaperItem, String) -> Void,
         onReveal: @escaping (WallpaperItem) -> Void,
         onRemove: @escaping (WallpaperItem) -> Void,
         onDropVideos: @escaping ([URL]) -> Void
@@ -376,6 +400,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
             library: library,
             onAdd: onAdd,
             onSelect: onSelect,
+            onAssign: onAssign,
             onReveal: onReveal,
             onRemove: onRemove,
             onDropVideos: onDropVideos
@@ -383,7 +408,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "MonkeWall Kütüphanesi"
+        window.title = L("MonkeWall Library")
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false

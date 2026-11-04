@@ -1,6 +1,7 @@
 import Cocoa
 import AVFoundation
-import AVKit
+import IOKit.ps
+import ServiceManagement
 import UniformTypeIdentifiers
 
 // MARK: - Config
@@ -10,40 +11,54 @@ struct WallpaperConfig: Codable {
     var muted: Bool
     var pauseWhenAppActive: Bool
     var lockScreenVideo: Bool
+    var pauseOnBattery: Bool
+    var lockScreenAsked = false
+    var loginItemConfigured = false
+    var rotationMinutes = 0
+    var rotationShuffle = false
+    var lastRotation: Date?
 
     init(
         video: String = "wallpaper.mp4",
         muted: Bool = true,
-        pauseWhenAppActive: Bool = true,
-        lockScreenVideo: Bool = true
+        pauseWhenAppActive: Bool = false,
+        lockScreenVideo: Bool = false,
+        pauseOnBattery: Bool = false
     ) {
         self.video = video
         self.muted = muted
         self.pauseWhenAppActive = pauseWhenAppActive
         self.lockScreenVideo = lockScreenVideo
+        self.pauseOnBattery = pauseOnBattery
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         video = try container.decodeIfPresent(String.self, forKey: .video) ?? "wallpaper.mp4"
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? true
-        pauseWhenAppActive = try container.decodeIfPresent(Bool.self, forKey: .pauseWhenAppActive) ?? true
-        lockScreenVideo = try container.decodeIfPresent(Bool.self, forKey: .lockScreenVideo) ?? true
+        pauseWhenAppActive = try container.decodeIfPresent(Bool.self, forKey: .pauseWhenAppActive) ?? false
+        lockScreenVideo = try container.decodeIfPresent(Bool.self, forKey: .lockScreenVideo) ?? false
+        pauseOnBattery = try container.decodeIfPresent(Bool.self, forKey: .pauseOnBattery) ?? false
+        lockScreenAsked = try container.decodeIfPresent(Bool.self, forKey: .lockScreenAsked)
+            ?? container.contains(.lockScreenVideo)
+        loginItemConfigured = try container.decodeIfPresent(Bool.self, forKey: .loginItemConfigured) ?? false
+        rotationMinutes = try container.decodeIfPresent(Int.self, forKey: .rotationMinutes) ?? 0
+        rotationShuffle = try container.decodeIfPresent(Bool.self, forKey: .rotationShuffle) ?? false
+        lastRotation = try container.decodeIfPresent(Date.self, forKey: .lastRotation)
     }
 }
 
 // MARK: - App
 
-final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
-    private var windows: [NSWindow] = []
-    private var players: [AVQueuePlayer] = []
-    private var loopers: [AVPlayerLooper] = []
-    private var observations: [NSKeyValueObservation] = []
+final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
+    private var surfaces: [DesktopSurface] = []
+    private var players: [URL: LoopingPlayer] = [:]
 
     private var statusItem: NSStatusItem?
     private var pauseMenuItem: NSMenuItem?
     private var focusMenuItem: NSMenuItem?
     private var lockMenuItem: NSMenuItem?
+    private let videoMenu = NSMenu()
 
     private var config = WallpaperConfig()
     private var videoURL = supportDirectory.appendingPathComponent("wallpaper.mp4")
@@ -57,6 +72,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     private var focusPaused = false
     private var screensaverActive = false
     private var sessionActive = true
+    private var powerPaused = false
+    private var playbackFailed = false
     private var refreshWorkItem: DispatchWorkItem?
     private var persistenceTimer: Timer?
 
@@ -77,6 +94,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             pauseWhenAppActive: config.pauseWhenAppActive,
             lockScreenVideo: config.lockScreenVideo,
             muted: config.muted,
+            pauseOnBattery: config.pauseOnBattery,
             libraryCount: library.items.count,
             librarySizeText: library.totalSizeText,
             libraryPath: library.directory.path
@@ -84,17 +102,24 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.setActivationPolicy(.accessory)
 
+        setupMainMenu()
         setupStatusItem()
         setupObservers()
+        configureLoginItem()
+        updatePowerPause()
         rebuildWindows()
         updateFocusPause()
         startWindowPersistence()
 
         if config.lockScreenVideo, let item = library.activeItem {
-            installLockScreen(for: item, force: false)
+            installLockScreen(for: item, force: false, select: false)
         }
 
-        appLog("Launched. video=\(videoURL.path) screens=\(NSScreen.screens.count) library=\(library.items.count) lock=\(config.lockScreenVideo) focusPause=\(config.pauseWhenAppActive)")
+        if library.items.isEmpty && !config.lockScreenAsked {
+            openLibrary()
+        }
+
+        appLog("Launched. video=\(videoURL.path) screens=\(NSScreen.screens.count) library=\(library.items.count) lock=\(config.lockScreenVideo) focusPause=\(config.pauseWhenAppActive) loginItem=\(SMAppService.mainApp.status.rawValue) language=\(Bundle.main.preferredLocalizations.first ?? "")")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -107,6 +132,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshWorkItem?.cancel()
         persistenceTimer?.invalidate()
+        library.cancelTranscodes()
         teardownWindows()
         appLog("Terminated.")
     }
@@ -136,6 +162,37 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         try? data.write(to: configURL, options: .atomic)
     }
 
+    private func configureLoginItem() {
+        guard !config.loginItemConfigured else { return }
+
+        do {
+            try SMAppService.mainApp.register()
+            try? FileManager.default.removeItem(at: legacyLaunchAgentURL)
+            config.loginItemConfigured = true
+            saveConfig()
+            appLog("Login item registered")
+        } catch {
+            appLog("Login item could not be registered: \(error)")
+        }
+    }
+
+    private func setupMainMenu() {
+        let windowMenu = NSMenu(title: L("Window"))
+        windowMenu.addItem(withTitle: L("Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowItem = NSMenuItem()
+        windowItem.submenu = windowMenu
+
+        let editMenu = NSMenu(title: L("Edit"))
+        editMenu.addItem(withTitle: L("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        let editItem = NSMenuItem()
+        editItem.submenu = editMenu
+
+        let mainMenu = NSMenu()
+        mainMenu.addItem(windowItem)
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
+    }
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.toolTip = "MonkeWall"
@@ -147,48 +204,57 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         header.isEnabled = false
         menu.addItem(header)
 
-        let libraryItem = NSMenuItem(title: "Kütüphane…", action: #selector(openLibrary), keyEquivalent: "l")
+        let libraryItem = NSMenuItem(title: L("Library…"), action: #selector(openLibrary), keyEquivalent: "l")
         libraryItem.target = self
         menu.addItem(libraryItem)
 
-        let choose = NSMenuItem(title: "Video Ekle…", action: #selector(chooseVideo), keyEquivalent: "o")
+        let choose = NSMenuItem(title: L("Add Videos…"), action: #selector(chooseVideo), keyEquivalent: "o")
         choose.target = self
         menu.addItem(choose)
 
+        let videos = NSMenuItem(title: L("Videos"), action: nil, keyEquivalent: "")
+        videoMenu.delegate = self
+        videos.submenu = videoMenu
+        menu.addItem(videos)
+
+        let next = NSMenuItem(title: L("Next Video"), action: #selector(showNextVideo), keyEquivalent: "n")
+        next.target = self
+        menu.addItem(next)
+
         menu.addItem(.separator())
 
-        let pause = NSMenuItem(title: "Duraklat", action: #selector(togglePause), keyEquivalent: "")
+        let pause = NSMenuItem(title: L("Pause"), action: #selector(togglePause), keyEquivalent: "")
         pause.target = self
         menu.addItem(pause)
         pauseMenuItem = pause
 
-        let focus = NSMenuItem(title: "Odaklanınca Duraklat", action: #selector(toggleFocusPause), keyEquivalent: "")
+        let focus = NSMenuItem(title: L("Pause When Another App Is Active"), action: #selector(toggleFocusPause), keyEquivalent: "")
         focus.target = self
         menu.addItem(focus)
         focusMenuItem = focus
 
-        let lock = NSMenuItem(title: "Kilit Ekranında Oynat", action: #selector(toggleLockScreenVideo), keyEquivalent: "")
+        let lock = NSMenuItem(title: L("Play on Lock Screen"), action: #selector(toggleLockScreenVideo), keyEquivalent: "")
         lock.target = self
         menu.addItem(lock)
         lockMenuItem = lock
 
-        let reload = NSMenuItem(title: "Yeniden Yükle", action: #selector(reloadWallpaper), keyEquivalent: "r")
+        let reload = NSMenuItem(title: L("Reload"), action: #selector(reloadWallpaper), keyEquivalent: "r")
         reload.target = self
         menu.addItem(reload)
 
         menu.addItem(.separator())
 
-        let settings = NSMenuItem(title: "Ayarlar…", action: #selector(openSettings), keyEquivalent: ",")
+        let settings = NSMenuItem(title: L("Settings…"), action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
-        let about = NSMenuItem(title: "Hakkında", action: #selector(openAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: L("About"), action: #selector(openAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Çıkış", action: #selector(quitApp), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L("Quit"), action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -217,9 +283,39 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenuStates() {
-        pauseMenuItem?.title = manuallyPaused ? "Devam Et" : "Duraklat"
+        pauseMenuItem?.title = manuallyPaused ? L("Resume") : L("Pause")
         focusMenuItem?.state = config.pauseWhenAppActive ? .on : .off
         lockMenuItem?.state = config.lockScreenVideo ? .on : .off
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        guard !library.items.isEmpty else {
+            menu.addItem(NSMenuItem(title: L("No Videos"), action: nil, keyEquivalent: ""))
+            return
+        }
+
+        for item in library.items {
+            let entry = NSMenuItem(title: item.title, action: #selector(videoMenuItemSelected(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = item
+            entry.state = item.id == library.activeID ? .on : .off
+            if let thumbnail = library.thumbnails[item.id]?.copy() as? NSImage {
+                thumbnail.size = NSSize(width: 32, height: 18)
+                entry.image = thumbnail
+            }
+            menu.addItem(entry)
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action != #selector(showNextVideo) || library.items.count > 1
+    }
+
+    @objc private func videoMenuItemSelected(_ sender: NSMenuItem) {
+        guard let item = sender.representedObject as? WallpaperItem else { return }
+        selectVideo(item)
     }
 
     private func setupObservers() {
@@ -227,6 +323,13 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(occlusionChanged(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification,
             object: nil
         )
 
@@ -243,6 +346,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
                                     name: NSWorkspace.didActivateApplicationNotification, object: nil)
 
         setupLockNotifications()
+        setupPowerNotifications()
 
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -295,6 +399,28 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func setupPowerNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(powerStateChanged),
+            name: .NSProcessInfoPowerStateDidChange,
+            object: nil
+        )
+
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let source = IOPSNotificationCreateRunLoopSource({ pointer in
+            guard let pointer else { return }
+            let delegate = Unmanaged<WallpaperAppDelegate>
+                .fromOpaque(pointer)
+                .takeUnretainedValue()
+            DispatchQueue.main.async { delegate.updatePowerPause() }
+        }, context)?.takeRetainedValue()
+
+        if let source {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
+    }
+
     // MARK: - Windows
 
     private func rebuildWindows() {
@@ -306,6 +432,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        guard !playbackFailed else { return }
+
         guard FileManager.default.fileExists(atPath: videoURL.path) else {
             appLog("Video not found at \(videoURL.path)")
             setStatusIcon(warning: true)
@@ -316,73 +444,130 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         let windowLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
 
         for screen in NSScreen.screens {
-            let player = AVQueuePlayer()
-            player.isMuted = config.muted
-            player.preventsDisplaySleepDuringVideoPlayback = false
-
-            let templateItem = AVPlayerItem(url: videoURL)
-            let looper = AVPlayerLooper(player: player, templateItem: templateItem)
-
-            if let currentItem = player.currentItem {
-                observations.append(currentItem.observe(\.status, options: [.new]) { item, _ in
-                    if item.status == .failed {
-                        appLog("Video item failed: \(String(describing: item.error))")
-                    }
-                })
-            }
-
-            let playerView = AVPlayerView()
-            playerView.player = player
-            playerView.controlsStyle = .none
-            playerView.videoGravity = .resizeAspectFill
-            playerView.showsFullScreenToggleButton = false
-
-            let window = NSWindow(
-                contentRect: screen.frame,
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: false
-            )
-            window.level = windowLevel
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-            window.ignoresMouseEvents = true
-            window.isOpaque = true
-            window.backgroundColor = .black
-            window.hasShadow = false
-            window.isReleasedWhenClosed = false
-            window.contentView = playerView
-            window.setFrame(screen.frame, display: true)
+            let surface = DesktopSurface(screen: screen, level: windowLevel)
+            let url = videoURL(forScreen: surface.screenKey)
+            surface.show(loopingPlayer(for: url).player, url: url, animated: false) {}
             if sessionActive {
-                window.orderFrontRegardless()
+                surface.window.orderFrontRegardless()
             }
-
-            windows.append(window)
-            players.append(player)
-            loopers.append(looper)
+            surfaces.append(surface)
 
             appLog("Window created: \(screen.frame) level=\(windowLevel.rawValue)")
         }
 
+        updateMuting()
+        applyPlayback()
+    }
+
+    private func refreshSurfaces() {
+        guard !surfaces.isEmpty else {
+            rebuildWindows()
+            return
+        }
+
+        let animated = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for surface in surfaces {
+            let url = videoURL(forScreen: surface.screenKey)
+            guard surface.videoURL != url else { continue }
+            surface.show(loopingPlayer(for: url).player, url: url, animated: animated) { [weak self] in
+                self?.pruneUnusedPlayers()
+            }
+        }
+
+        updateMuting()
         applyPlayback()
     }
 
     private func teardownWindows() {
-        observations.forEach { $0.invalidate() }
-        observations.removeAll()
-        players.forEach { $0.pause() }
+        surfaces.forEach { $0.window.orderOut(nil) }
+        surfaces.removeAll()
         players.removeAll()
-        loopers.removeAll()
-        windows.forEach { $0.orderOut(nil) }
-        windows.removeAll()
+    }
+
+    private func videoURL(forScreen key: String) -> URL {
+        guard let id = library.screenAssignments[key],
+              let item = library.items.first(where: { $0.id == id }) else { return videoURL }
+        return library.fileURL(for: item)
+    }
+
+    private func loopingPlayer(for url: URL) -> LoopingPlayer {
+        if let existing = players[url] {
+            return existing
+        }
+        let created = LoopingPlayer(url: url) { [weak self] error in
+            self?.handlePlaybackFailure(error, url: url)
+        }
+        players[url] = created
+        return created
+    }
+
+    private func pruneUnusedPlayers() {
+        guard !surfaces.contains(where: \.isFading) else { return }
+        let inUse = Set(surfaces.compactMap(\.videoURL))
+        players = players.filter { inUse.contains($0.key) }
+        appLog("Crossfade finished, players=\(players.count)")
+    }
+
+    private func updateMuting() {
+        for (url, looping) in players {
+            looping.player.isMuted = config.muted || url != videoURL
+        }
+    }
+
+    private func handlePlaybackFailure(_ error: Error?, url: URL) {
+        guard !playbackFailed else { return }
+        appLog("Video playback failed: \(String(describing: error))")
+        playbackFailed = true
+        teardownWindows()
+        setStatusIcon(warning: true)
+        showAlert(
+            L("Video Couldn't Be Played"),
+            String(
+                format: L("%@ couldn't be played. Choose another video from the library."),
+                library.item(matching: url)?.title ?? L("The selected video")
+            )
+        )
     }
 
     // MARK: - Playback
 
     private func applyPlayback() {
-        let shouldPlay = !manuallyPaused && !systemPaused && !focusPaused && !screensaverActive
-        for player in players {
-            shouldPlay ? player.play() : player.pause()
+        let canPlay = sessionActive
+            && !manuallyPaused
+            && !systemPaused
+            && !focusPaused
+            && !screensaverActive
+            && !powerPaused
+        for (url, looping) in players {
+            if canPlay && surfaces.contains(where: { $0.uses(url) && $0.isVisible }) {
+                looping.player.play()
+            } else {
+                looping.player.pause()
+            }
         }
+    }
+
+    @objc private func occlusionChanged(_ notification: Notification) {
+        guard surfaces.contains(where: { $0.window === notification.object as? NSWindow }) else { return }
+        applyPlayback()
+        appLog("Visible surfaces: \(surfaces.filter(\.isVisible).count)/\(surfaces.count)")
+    }
+
+    private func updatePowerPause() {
+        let paused = config.pauseOnBattery
+            && (isOnBattery() || ProcessInfo.processInfo.isLowPowerModeEnabled)
+        guard powerPaused != paused else { return }
+        powerPaused = paused
+        applyPlayback()
+        appLog("Power pause: \(paused)")
+    }
+
+    private func isOnBattery() -> Bool {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let source = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue() else {
+            return false
+        }
+        return source as String == kIOPSBatteryPowerValue
     }
 
     private func updateFocusPause() {
@@ -414,8 +599,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.message = "Kütüphaneye eklenecek videoları seç."
-        panel.prompt = "Kütüphaneye Ekle"
+        panel.message = L("Choose videos to add to the library.")
+        panel.prompt = L("Add to Library")
 
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
         addVideos(panel.urls)
@@ -426,7 +611,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             libraryWindowController = LibraryWindowController(
                 library: library,
                 onAdd: { [weak self] in self?.chooseVideo() },
-                onSelect: { [weak self] item in self?.applyLibraryItem(item) },
+                onSelect: { [weak self] item in self?.selectVideo(item) },
+                onAssign: { [weak self] item, screenKey in self?.assignVideo(item, toScreen: screenKey) },
                 onReveal: { [weak self] item in
                     guard let self else { return }
                     NSWorkspace.shared.activateFileViewerSelecting([self.library.fileURL(for: item)])
@@ -439,29 +625,93 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func addVideos(_ urls: [URL]) {
-        library.importVideos(urls) { [weak self] imported in
+        library.importVideos(urls) { [weak self] imported, rejected in
             guard let self else { return }
-            guard let first = imported.first else {
-                appLog("Library: no new video was imported")
-                return
+            if let first = imported.first {
+                self.applyLibraryItem(first)
+                self.askLockScreenIfNeeded()
             }
-            self.applyLibraryItem(first)
+            if !rejected.isEmpty {
+                self.showAlert(
+                    L("Couldn't Add Videos"),
+                    String(
+                        format: L("These files can't be played or couldn't be copied:\n%@"),
+                        rejected.joined(separator: "\n")
+                    )
+                )
+            }
         }
     }
 
+    private func askLockScreenIfNeeded() {
+        guard !config.lockScreenAsked else { return }
+        config.lockScreenAsked = true
+        saveConfig()
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = L("Play on the Lock Screen Too?")
+        alert.informativeText = L("MonkeWall registers the video as your macOS wallpaper and lock screen. Your current wallpaper is backed up, and you can turn this off in Settings at any time.")
+        alert.addButton(withTitle: L("Yes, Play It"))
+        alert.addButton(withTitle: L("Not Now"))
+        if alert.runModal() == .alertFirstButtonReturn {
+            setLockScreenEnabled(true)
+        }
+    }
+
+    private func selectVideo(_ item: WallpaperItem) {
+        library.clearScreenAssignments()
+        playbackFailed = false
+        if item.id == library.activeID {
+            refreshSurfaces()
+        } else {
+            applyLibraryItem(item)
+        }
+    }
+
+    private func assignVideo(_ item: WallpaperItem, toScreen key: String) {
+        library.assign(item, toScreen: key)
+        playbackFailed = false
+        refreshSurfaces()
+    }
+
+    @objc private func showNextVideo() {
+        guard let next = library.nextItem(shuffled: config.rotationShuffle) else { return }
+        applyLibraryItem(next)
+    }
+
+    private func rotateIfDue() {
+        guard config.rotationMinutes > 0,
+              sessionActive,
+              !manuallyPaused,
+              !systemPaused,
+              !screensaverActive,
+              !powerPaused,
+              Date().timeIntervalSince(config.lastRotation ?? .distantPast) >= Double(config.rotationMinutes) * 60
+        else { return }
+        showNextVideo()
+    }
+
     private func applyLibraryItem(_ item: WallpaperItem) {
+        guard item.id != library.activeID else { return }
+
         let fileURL = library.fileURL(for: item)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            showAlert("Video bulunamadı", "\(item.title) dosyası kütüphanede bulunamadı.")
+            showAlert(
+                L("Video Not Found"),
+                String(format: L("The file for %@ wasn't found in the library."), item.title)
+            )
             return
         }
 
+        playbackFailed = false
         videoURL = fileURL
         library.setActive(item)
         config.video = "library/\(item.file)"
+        config.lastRotation = Date()
         saveConfig()
         refreshSettingsModel()
-        rebuildWindows()
+        refreshSurfaces()
         updateFocusPause()
 
         if config.lockScreenVideo {
@@ -484,6 +734,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         library.remove(item)
+        refreshSurfaces()
         refreshSettingsModel()
     }
 
@@ -493,11 +744,12 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     private func installLockScreen(
         for item: WallpaperItem,
         force: Bool,
+        select: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
         let sidecar = library.sidecarURL(for: item)
         if FileManager.default.fileExists(atPath: sidecar.path) {
-            let installed = AerialsManager.shared.install(videoURL: sidecar, force: force)
+            let installed = AerialsManager.shared.install(videoURL: sidecar, force: force, select: select)
             if !installed {
                 appLog("Lock screen installation failed for \(item.file)")
             }
@@ -517,7 +769,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let source = generated ?? self.library.fileURL(for: item)
-            let installed = AerialsManager.shared.install(videoURL: source, force: true)
+            let installed = AerialsManager.shared.install(videoURL: source, force: true, select: select)
             if !installed {
                 appLog("Lock screen installation failed for \(item.file)")
             }
@@ -527,7 +779,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func togglePause() {
         manuallyPaused.toggle()
-        pauseMenuItem?.title = manuallyPaused ? "Devam Et" : "Duraklat"
+        pauseMenuItem?.title = manuallyPaused ? L("Resume") : L("Pause")
         applyPlayback()
         appLog(manuallyPaused ? "Paused by user." : "Resumed by user.")
     }
@@ -556,18 +808,21 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !enabled {
-            _ = AerialsManager.shared.remove()
+            let restored = AerialsManager.shared.remove()
             config.lockScreenVideo = false
             lockMenuItem?.state = .off
             saveConfig()
             refreshSettingsModel()
             appLog("Lock screen video disabled")
+            if !restored {
+                showLockScreenRestoreFailure()
+            }
             return
         }
 
         guard let item = library.activeItem else {
             refreshSettingsModel()
-            showAlert("Video yok", "Önce kütüphaneye bir video ekle.")
+            showAlert(L("No Videos"), L("Add a video to the library first."))
             return
         }
 
@@ -584,8 +839,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             self.saveConfig()
             self.refreshSettingsModel()
             self.showAlert(
-                "Kilit ekranı ayarlanamadı",
-                "macOS duvar kağıdı deposu yazılamadı. Sistem Ayarları > Duvar Kağıdı bölümünden tekrar deneyebilirsin."
+                L("Couldn't Set the Lock Screen"),
+                L("macOS's wallpaper store couldn't be written. You can try again from System Settings > Wallpaper.")
             )
         }
     }
@@ -593,9 +848,63 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     private func setMuted(_ muted: Bool) {
         config.muted = muted
         saveConfig()
-        players.forEach { $0.isMuted = muted }
+        updateMuting()
         refreshSettingsModel()
         appLog("Muted: \(muted)")
+    }
+
+    private func setBatteryPauseEnabled(_ enabled: Bool) {
+        config.pauseOnBattery = enabled
+        saveConfig()
+        updatePowerPause()
+        refreshSettingsModel()
+        appLog("Battery pause setting: \(enabled)")
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            appLog("Login item change failed: \(error)")
+        }
+        if enabled && SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+        }
+        refreshSettingsModel()
+    }
+
+    private func setRotation(minutes: Int) {
+        config.rotationMinutes = minutes
+        config.lastRotation = Date()
+        saveConfig()
+        refreshSettingsModel()
+    }
+
+    private func setRotationShuffle(_ enabled: Bool) {
+        config.rotationShuffle = enabled
+        saveConfig()
+        refreshSettingsModel()
+    }
+
+    private func uninstallApp() {
+        library.cancelTranscodes()
+        guard uninstallEverything() else {
+            showLockScreenRestoreFailure()
+            return
+        }
+        try? FileManager.default.trashItem(at: Bundle.main.bundleURL, resultingItemURL: nil)
+        exit(0)
+    }
+
+    private func showLockScreenRestoreFailure() {
+        showAlert(
+            L("Couldn't Restore the Previous Wallpaper"),
+            L("The backup couldn't be used. You can choose another wallpaper and screen saver in System Settings.")
+        )
     }
 
     // MARK: - Settings
@@ -614,6 +923,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
                 pauseWhenAppActive: config.pauseWhenAppActive,
                 lockScreenVideo: config.lockScreenVideo,
                 muted: config.muted,
+                pauseOnBattery: config.pauseOnBattery,
                 libraryCount: library.items.count,
                 librarySizeText: library.totalSizeText,
                 libraryPath: library.directory.path
@@ -628,6 +938,11 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
                 onPauseChange: { [weak self] value in self?.setFocusPauseEnabled(value) },
                 onLockScreenChange: { [weak self] value in self?.setLockScreenEnabled(value) },
                 onMuteChange: { [weak self] value in self?.setMuted(value) },
+                onBatteryPauseChange: { [weak self] value in self?.setBatteryPauseEnabled(value) },
+                onLaunchAtLoginChange: { [weak self] value in self?.setLaunchAtLogin(value) },
+                onRotationChange: { [weak self] value in self?.setRotation(minutes: value) },
+                onShuffleChange: { [weak self] value in self?.setRotationShuffle(value) },
+                onUninstall: { [weak self] in self?.uninstallApp() },
                 onOpenLibrary: { [weak self] in self?.openLibrary() },
                 onRevealLibraryFolder: { [weak self] in
                     guard let self else { return }
@@ -645,6 +960,10 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         settingsModel?.pauseWhenAppActive = config.pauseWhenAppActive
         settingsModel?.lockScreenVideo = config.lockScreenVideo
         settingsModel?.muted = config.muted
+        settingsModel?.pauseOnBattery = config.pauseOnBattery
+        settingsModel?.launchAtLogin = SMAppService.mainApp.status == .enabled
+        settingsModel?.rotationMinutes = config.rotationMinutes
+        settingsModel?.rotationShuffle = config.rotationShuffle
         settingsModel?.libraryCount = library.items.count
         settingsModel?.librarySizeText = library.totalSizeText
         settingsModel?.libraryPath = library.directory.path
@@ -658,10 +977,8 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        _ = AerialsManager.shared.remove()
-        config.lockScreenVideo = false
+        let restored = AerialsManager.shared.remove()
         config.video = "wallpaper.mp4"
-        lockMenuItem?.state = .off
         saveConfig()
 
         library.removeAll()
@@ -670,11 +987,16 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         updateMenuStates()
         refreshSettingsModel()
         setStatusIcon(warning: false)
-        appLog("Library cleared; previous wallpaper restored")
+        appLog("Library cleared; previous wallpaper restored: \(restored)")
+
+        if !restored {
+            showLockScreenRestoreFailure()
+        }
     }
 
     @objc private func reloadWallpaper() {
         loadConfig()
+        playbackFailed = false
 
         if let activeURL = library.bootstrap(currentVideoURL: videoURL) {
             videoURL = activeURL
@@ -685,6 +1007,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         updateMenuStates()
+        updatePowerPause()
         rebuildWindows()
         updateFocusPause()
         refreshSettingsModel()
@@ -703,6 +1026,10 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func frontmostAppChanged() {
         updateFocusPause()
+    }
+
+    @objc private func powerStateChanged() {
+        DispatchQueue.main.async { [weak self] in self?.updatePowerPause() }
     }
 
     @objc private func displayDidSleep() {
@@ -759,11 +1086,11 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func hideWindows() {
-        windows.forEach { $0.orderOut(nil) }
+        surfaces.forEach { $0.window.orderOut(nil) }
     }
 
     private func showWindows() {
-        windows.forEach { $0.orderFrontRegardless() }
+        surfaces.forEach { $0.window.orderFrontRegardless() }
     }
 
     private func scheduleLockScreenRefresh() {
@@ -772,7 +1099,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
 
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.config.lockScreenVideo else { return }
-            _ = AerialsManager.shared.refresh()
+            AerialsManager.shared.repairRegistrationIfNeeded()
         }
         refreshWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
@@ -784,6 +1111,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
         persistenceTimer?.invalidate()
         persistenceTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.enforceWindowVisibility()
+            self?.rotateIfDue()
         }
         persistenceTimer?.tolerance = 1.0
     }
@@ -806,24 +1134,24 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
 
         guard !screensaverActive else { return }
 
-        if windows.isEmpty {
+        if surfaces.isEmpty {
             if FileManager.default.fileExists(atPath: videoURL.path) {
                 rebuildWindows()
             }
             return
         }
 
-        for (index, window) in windows.enumerated() {
-            if index < NSScreen.screens.count {
-                let frame = NSScreen.screens[index].frame
-                if window.frame != frame {
-                    window.setFrame(frame, display: true)
-                }
+        for surface in surfaces {
+            if let screen = NSScreen.screens.first(where: { $0.displayKey == surface.screenKey }),
+               surface.window.frame != screen.frame {
+                surface.window.setFrame(screen.frame, display: true)
             }
-            if !window.isVisible {
-                window.orderFrontRegardless()
+            if !surface.window.isVisible {
+                surface.window.orderFrontRegardless()
             }
         }
+
+        applyPlayback()
     }
 
     private func sessionIsLocked() -> Bool {
@@ -840,6 +1168,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAlert(_ title: String, _ message: String) {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -848,18 +1177,39 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+func uninstallEverything() -> Bool {
+    guard AerialsManager.shared.remove() else { return false }
+
+    try? SMAppService.mainApp.unregister()
+    if let identifier = Bundle.main.bundleIdentifier {
+        UserDefaults.standard.removePersistentDomain(forName: identifier)
+    }
+
+    let fileManager = FileManager.default
+    try? fileManager.removeItem(at: legacyLaunchAgentURL)
+    try? fileManager.removeItem(at: supportDirectory)
+    try? fileManager.removeItem(at: logURL.deletingLastPathComponent().appendingPathComponent("MonkeWall.stderr.log"))
+    try? fileManager.removeItem(at: logURL)
+    return true
+}
+
 // MARK: - Entry point
 
 let arguments = CommandLine.arguments
 
-if arguments.contains("--uninstall") || arguments.contains("--remove-lock-screen") {
-    _ = AerialsManager.shared.remove()
-    exit(0)
+if arguments.contains("--uninstall") {
+    exit(uninstallEverything() ? 0 : 1)
+}
+
+if arguments.contains("--remove-lock-screen") {
+    exit(AerialsManager.shared.remove() ? 0 : 1)
 }
 
 if let index = arguments.firstIndex(of: "--install-lock-screen"), index + 1 < arguments.count {
     let url = URL(fileURLWithPath: arguments[index + 1])
-    exit(AerialsManager.shared.install(videoURL: url, force: true) ? 0 : 1)
+    let installed = AerialsManager.shared.install(videoURL: url, force: true)
+    AerialsManager.shared.waitForThumbnail()
+    exit(installed ? 0 : 1)
 }
 
 let application = NSApplication.shared

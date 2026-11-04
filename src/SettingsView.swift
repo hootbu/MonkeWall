@@ -12,9 +12,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "Genel"
-        case .library: return "Kütüphane"
-        case .about: return "Hakkında"
+        case .general: return L("General")
+        case .library: return L("Library")
+        case .about: return L("About")
         }
     }
 
@@ -32,6 +32,10 @@ final class SettingsModel: ObservableObject {
     @Published var pauseWhenAppActive: Bool
     @Published var lockScreenVideo: Bool
     @Published var muted: Bool
+    @Published var pauseOnBattery: Bool
+    @Published var launchAtLogin = false
+    @Published var rotationMinutes = 0
+    @Published var rotationShuffle = false
     @Published var libraryCount: Int
     @Published var librarySizeText: String
     @Published var libraryPath: String
@@ -40,6 +44,7 @@ final class SettingsModel: ObservableObject {
         pauseWhenAppActive: Bool,
         lockScreenVideo: Bool,
         muted: Bool,
+        pauseOnBattery: Bool,
         libraryCount: Int,
         librarySizeText: String,
         libraryPath: String
@@ -47,6 +52,7 @@ final class SettingsModel: ObservableObject {
         self.pauseWhenAppActive = pauseWhenAppActive
         self.lockScreenVideo = lockScreenVideo
         self.muted = muted
+        self.pauseOnBattery = pauseOnBattery
         self.libraryCount = libraryCount
         self.librarySizeText = librarySizeText
         self.libraryPath = libraryPath
@@ -55,7 +61,7 @@ final class SettingsModel: ObservableObject {
     var versionText: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "Sürüm \(version) (\(build))"
+        return String(format: L("Version %@ (%@)"), version, build)
     }
 }
 
@@ -67,11 +73,17 @@ struct SettingsView: View {
     let onPauseChange: (Bool) -> Void
     let onLockScreenChange: (Bool) -> Void
     let onMuteChange: (Bool) -> Void
+    let onBatteryPauseChange: (Bool) -> Void
+    let onLaunchAtLoginChange: (Bool) -> Void
+    let onRotationChange: (Int) -> Void
+    let onShuffleChange: (Bool) -> Void
+    let onUninstall: () -> Void
     let onOpenLibrary: () -> Void
     let onRevealLibraryFolder: () -> Void
     let onDeleteAll: () -> Void
 
     @State private var showDeleteConfirmation = false
+    @State private var showUninstallConfirmation = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -89,13 +101,21 @@ struct SettingsView: View {
         }
         .background(BrandTheme.background)
         .frame(minWidth: 660, minHeight: 480)
-        .alert("Tüm videolar silinsin mi?", isPresented: $showDeleteConfirmation) {
-            Button("Tümünü Sil", role: .destructive) {
+        .alert("Delete All Videos?", isPresented: $showDeleteConfirmation) {
+            Button("Delete All", role: .destructive) {
                 onDeleteAll()
             }
-            Button("Vazgeç", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Kütüphanedeki tüm videolar, kapak görselleri ve kilit ekranı için hazırlanan 4K kopyalar silinecek. Duvar kağıdı eski haline dönecek. Bu işlem geri alınamaz.")
+            Text("All library videos, thumbnails and 4K lock screen copies will be deleted, and your previous wallpaper will come back. This can't be undone.")
+        }
+        .alert("Uninstall MonkeWall?", isPresented: $showUninstallConfirmation) {
+            Button("Uninstall", role: .destructive) {
+                onUninstall()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your previous wallpaper comes back, all videos and settings are deleted, and the app moves to the Trash. This can't be undone.")
         }
     }
 
@@ -172,14 +192,28 @@ struct SettingsView: View {
     private var generalTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             pageHeader(
-                "Genel",
-                "MonkeWall'un nasıl davranacağını ayarla."
+                "General",
+                "Set how MonkeWall behaves."
             )
 
             VStack(spacing: 0) {
                 settingRow(
-                    title: "Odaklanınca duraklat",
-                    subtitle: "Başka bir uygulama öne geldiğinde videoyu duraklatır.",
+                    title: "Launch at login",
+                    subtitle: "Starts MonkeWall when you log in to your Mac.",
+                    isOn: Binding(
+                        get: { model.launchAtLogin },
+                        set: { value in
+                            model.launchAtLogin = value
+                            onLaunchAtLoginChange(value)
+                        }
+                    )
+                )
+
+                sectionDivider
+
+                settingRow(
+                    title: "Pause when another app is active",
+                    subtitle: "Pauses the video whenever another app is in front, even if the desktop is still visible. When off, it only pauses once the desktop is completely covered.",
                     isOn: Binding(
                         get: { model.pauseWhenAppActive },
                         set: { value in
@@ -192,8 +226,8 @@ struct SettingsView: View {
                 sectionDivider
 
                 settingRow(
-                    title: "Kilit ekranında oynat",
-                    subtitle: "Seçili videoyu macOS kilit ekranına ve ekran koruyucuya uygular.",
+                    title: "Play on lock screen",
+                    subtitle: "Applies the selected video to the macOS lock screen and screen saver.",
                     isOn: Binding(
                         get: { model.lockScreenVideo },
                         set: { value in
@@ -206,8 +240,8 @@ struct SettingsView: View {
                 sectionDivider
 
                 settingRow(
-                    title: "Sessiz",
-                    subtitle: "Videoların sesini kapatır.",
+                    title: "Mute",
+                    subtitle: "Turns off video sound.",
                     isOn: Binding(
                         get: { model.muted },
                         set: { value in
@@ -216,10 +250,45 @@ struct SettingsView: View {
                         }
                     )
                 )
+
+                sectionDivider
+
+                settingRow(
+                    title: "Pause on battery",
+                    subtitle: "Pauses the video while on battery or in Low Power Mode.",
+                    isOn: Binding(
+                        get: { model.pauseOnBattery },
+                        set: { value in
+                            model.pauseOnBattery = value
+                            onBatteryPauseChange(value)
+                        }
+                    )
+                )
             }
             .background(cardBackground)
 
-            Text("Kilit ekranı için her video 4K HEVC olarak yeniden kodlanır; bu işlem videonun uzunluğuna göre birkaç saniye sürebilir.")
+            VStack(spacing: 0) {
+                rotationRow
+
+                sectionDivider
+
+                settingRow(
+                    title: "Shuffle",
+                    subtitle: "Picks a random video instead of following library order.",
+                    isOn: Binding(
+                        get: { model.rotationShuffle },
+                        set: { value in
+                            model.rotationShuffle = value
+                            onShuffleChange(value)
+                        }
+                    )
+                )
+                .disabled(model.rotationMinutes == 0)
+                .opacity(model.rotationMinutes == 0 ? 0.45 : 1)
+            }
+            .background(cardBackground)
+
+            Text("Each video is re-encoded to 4K HEVC for the lock screen. This can take a few seconds depending on its length.")
                 .font(.system(size: 11))
                 .foregroundStyle(BrandTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -231,14 +300,14 @@ struct SettingsView: View {
     private var libraryTab: some View {
         VStack(alignment: .leading, spacing: 18) {
             pageHeader(
-                "Kütüphane",
-                "Videolar ve kilit ekranı kopyaları burada tutulur."
+                "Library",
+                "Videos and lock screen copies are stored here."
             )
 
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .center, spacing: 16) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(model.libraryCount) video")
+                        Text(videoCountText(model.libraryCount))
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(BrandTheme.primaryText)
                         Text(model.librarySizeText)
@@ -248,7 +317,7 @@ struct SettingsView: View {
 
                     Spacer()
 
-                    Button("Kütüphaneyi Aç", action: onOpenLibrary)
+                    Button("Open Library", action: onOpenLibrary)
                         .buttonStyle(PrimarySettingsButtonStyle())
                 }
 
@@ -257,7 +326,7 @@ struct SettingsView: View {
                     .frame(height: 1)
 
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("KLASÖR")
+                    Text("FOLDER")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.8)
                         .foregroundStyle(BrandTheme.secondaryText)
@@ -270,10 +339,10 @@ struct SettingsView: View {
                         .truncationMode(.middle)
 
                     HStack(spacing: 12) {
-                        Button("Finder'da Göster", action: onRevealLibraryFolder)
+                        Button("Show in Finder", action: onRevealLibraryFolder)
                             .buttonStyle(SecondarySettingsButtonStyle())
 
-                        Text("4K kilit kopyaları da bu klasörde.")
+                        Text("The 4K lock screen copies are in this folder too.")
                             .font(.system(size: 10))
                             .foregroundStyle(BrandTheme.secondaryText)
                     }
@@ -284,12 +353,12 @@ struct SettingsView: View {
             .background(cardBackground)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("TEHLİKELİ BÖLGE")
+                Text("DANGER ZONE")
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(BrandTheme.danger)
 
-                Text("Kütüphanedeki tüm videoları, kapak görsellerini ve kilit ekranı için hazırlanan 4K kopyaları siler. Duvar kağıdı eski haline döner.")
+                Text("Deletes all library videos, thumbnails and 4K lock screen copies. Your previous wallpaper comes back.")
                     .font(.system(size: 11))
                     .foregroundStyle(BrandTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -297,7 +366,7 @@ struct SettingsView: View {
                 Button {
                     showDeleteConfirmation = true
                 } label: {
-                    Label("Tüm videoları sil", systemImage: "trash")
+                    Label("Delete all videos", systemImage: "trash")
                 }
                 .buttonStyle(DangerSettingsButtonStyle())
                 .disabled(model.libraryCount == 0)
@@ -335,7 +404,7 @@ struct SettingsView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(BrandTheme.secondaryText)
 
-                    Text("macOS için hareketli duvar kağıdı")
+                    Text("Live wallpaper for macOS")
                         .font(.system(size: 12))
                         .foregroundStyle(BrandTheme.secondaryText)
                 }
@@ -346,16 +415,23 @@ struct SettingsView: View {
                 .frame(height: 1)
 
             VStack(alignment: .leading, spacing: 12) {
-                infoRow("Geliştirici", "Emir Yorgun (hootbu)")
-                infoRow("Telif hakkı", "© 2026 Emir Yorgun. Tüm hakları saklıdır.")
-                infoRow("Lisans", "Tüm hakları saklıdır. Ticari dağıtım için izin gerekir.")
-                infoRow("Sistem", ProcessInfo.processInfo.operatingSystemVersionString)
+                infoRow("Developer", "Emir Yorgun (hootbu)")
+                infoRow("Copyright", L("© 2026 Emir Yorgun. All rights reserved."))
+                infoRow("License", L("All rights reserved. Commercial distribution requires permission."))
+                infoRow("System", ProcessInfo.processInfo.operatingSystemVersionString)
             }
 
-            Text("MonkeWall kişisel kullanım için geliştirilmiştir. Videolar ve kilit ekranı kopyaları yalnızca bu Mac'te saklanır.")
+            Text("MonkeWall was built for personal use. Videos and lock screen copies are stored only on this Mac.")
                 .font(.system(size: 11))
                 .foregroundStyle(BrandTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                showUninstallConfirmation = true
+            } label: {
+                Label("Uninstall MonkeWall…", systemImage: "trash")
+            }
+            .buttonStyle(DangerSettingsButtonStyle())
 
             Spacer(minLength: 0)
         }
@@ -363,13 +439,46 @@ struct SettingsView: View {
 
     // MARK: Components
 
+    private var rotationRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Change video automatically")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(BrandTheme.primaryText)
+                Text("Moves to the next video at this interval. Screens with their own video stay as they are.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(BrandTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Picker("", selection: Binding(
+                get: { model.rotationMinutes },
+                set: { value in
+                    model.rotationMinutes = value
+                    onRotationChange(value)
+                }
+            )) {
+                Text("Off").tag(0)
+                Text("15 minutes").tag(15)
+                Text("1 hour").tag(60)
+                Text("6 hours").tag(360)
+                Text("Every day").tag(1440)
+            }
+            .labelsHidden()
+            .fixedSize()
+        }
+        .padding(14)
+    }
+
     private var appIcon: NSImage {
         NSApp.applicationIconImage
             ?? NSImage(named: NSImage.applicationIconName)
             ?? NSImage()
     }
 
-    private func pageHeader(_ title: String, _ subtitle: String) -> some View {
+    private func pageHeader(_ title: LocalizedStringKey, _ subtitle: LocalizedStringKey) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
@@ -397,8 +506,8 @@ struct SettingsView: View {
     }
 
     private func settingRow(
-        title: String,
-        subtitle: String,
+        title: LocalizedStringKey,
+        subtitle: LocalizedStringKey,
         isOn: Binding<Bool>
     ) -> some View {
         HStack(alignment: .center, spacing: 16) {
@@ -422,7 +531,7 @@ struct SettingsView: View {
         .padding(14)
     }
 
-    private func infoRow(_ label: String, _ value: String) -> some View {
+    private func infoRow(_ label: LocalizedStringKey, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
@@ -448,6 +557,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onPauseChange: @escaping (Bool) -> Void,
         onLockScreenChange: @escaping (Bool) -> Void,
         onMuteChange: @escaping (Bool) -> Void,
+        onBatteryPauseChange: @escaping (Bool) -> Void,
+        onLaunchAtLoginChange: @escaping (Bool) -> Void,
+        onRotationChange: @escaping (Int) -> Void,
+        onShuffleChange: @escaping (Bool) -> Void,
+        onUninstall: @escaping () -> Void,
         onOpenLibrary: @escaping () -> Void,
         onRevealLibraryFolder: @escaping () -> Void,
         onDeleteAll: @escaping () -> Void
@@ -457,6 +571,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             onPauseChange: onPauseChange,
             onLockScreenChange: onLockScreenChange,
             onMuteChange: onMuteChange,
+            onBatteryPauseChange: onBatteryPauseChange,
+            onLaunchAtLoginChange: onLaunchAtLoginChange,
+            onRotationChange: onRotationChange,
+            onShuffleChange: onShuffleChange,
+            onUninstall: onUninstall,
             onOpenLibrary: onOpenLibrary,
             onRevealLibraryFolder: onRevealLibraryFolder,
             onDeleteAll: onDeleteAll
@@ -464,11 +583,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.title = "MonkeWall Ayarlar"
+        window.title = L("MonkeWall Settings")
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 720, height: 520))
+        window.setContentSize(NSSize(width: 720, height: 660))
         window.minSize = NSSize(width: 660, height: 480)
         window.center()
         window.setFrameAutosaveName("MonkeWallSettingsWindow")
