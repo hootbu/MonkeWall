@@ -2,6 +2,7 @@ import Cocoa
 import AVFoundation
 import IOKit.ps
 import ServiceManagement
+import Sparkle
 import UniformTypeIdentifiers
 
 // MARK: - Config
@@ -50,7 +51,15 @@ struct WallpaperConfig: Codable {
 
 // MARK: - App
 
-final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
+final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation, SPUStandardUserDriverDelegate {
+    private lazy var updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: self
+    )
+
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
     private var surfaces: [DesktopSurface] = []
     private var players: [URL: LoopingPlayer] = [:]
 
@@ -247,6 +256,14 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
         let settings = NSMenuItem(title: L("Settings…"), action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+
+        let updates = NSMenuItem(
+            title: L("Check for Updates…"),
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updates.target = updaterController
+        menu.addItem(updates)
 
         let about = NSMenuItem(title: L("About"), action: #selector(openAbout), keyEquivalent: "")
         about.target = self
@@ -877,6 +894,11 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
         refreshSettingsModel()
     }
 
+    private func setAutomaticUpdateChecks(_ enabled: Bool) {
+        updaterController.updater.automaticallyChecksForUpdates = enabled
+        refreshSettingsModel()
+    }
+
     private func setRotation(minutes: Int) {
         config.rotationMinutes = minutes
         config.lastRotation = Date()
@@ -940,6 +962,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
                 onMuteChange: { [weak self] value in self?.setMuted(value) },
                 onBatteryPauseChange: { [weak self] value in self?.setBatteryPauseEnabled(value) },
                 onLaunchAtLoginChange: { [weak self] value in self?.setLaunchAtLogin(value) },
+                onAutomaticUpdatesChange: { [weak self] value in self?.setAutomaticUpdateChecks(value) },
                 onRotationChange: { [weak self] value in self?.setRotation(minutes: value) },
                 onShuffleChange: { [weak self] value in self?.setRotationShuffle(value) },
                 onUninstall: { [weak self] in self?.uninstallApp() },
@@ -962,6 +985,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
         settingsModel?.muted = config.muted
         settingsModel?.pauseOnBattery = config.pauseOnBattery
         settingsModel?.launchAtLogin = SMAppService.mainApp.status == .enabled
+        settingsModel?.automaticUpdateChecks = updaterController.updater.automaticallyChecksForUpdates
         settingsModel?.rotationMinutes = config.rotationMinutes
         settingsModel?.rotationShuffle = config.rotationShuffle
         settingsModel?.libraryCount = library.items.count
@@ -1180,12 +1204,16 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 func uninstallEverything() -> Bool {
     guard AerialsManager.shared.remove() else { return false }
 
+    let fileManager = FileManager.default
+
     try? SMAppService.mainApp.unregister()
     if let identifier = Bundle.main.bundleIdentifier {
         UserDefaults.standard.removePersistentDomain(forName: identifier)
+        try? fileManager.removeItem(
+            at: fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(identifier)
+        )
     }
 
-    let fileManager = FileManager.default
     try? fileManager.removeItem(at: legacyLaunchAgentURL)
     try? fileManager.removeItem(at: supportDirectory)
     try? fileManager.removeItem(at: logURL.deletingLastPathComponent().appendingPathComponent("MonkeWall.stderr.log"))

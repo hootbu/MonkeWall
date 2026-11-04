@@ -102,3 +102,6 @@
 "Your previous wallpaper comes back, all videos and settings are deleted, and the app moves to the Trash. This can't be undone." = "Önceki duvar kağıdın geri gelir, tüm videolar ve ayarlar silinir, uygulama Çöp Kutusu'na taşınır. Bu işlem geri alınamaz.";
 "Use on Screen" = "Şu Ekranda Kullan";
 "%lld videos" = "%lld video";
+"Check for Updates…" = "Güncellemeleri Denetle…";
+"Check for updates automatically" = "Güncellemeleri otomatik denetle";
+"Looks for a new version once a day and asks before installing." = "Günde bir kez yeni sürüm arar, kurmadan önce sorar.";

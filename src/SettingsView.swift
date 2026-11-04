@@ -34,6 +34,7 @@ final class SettingsModel: ObservableObject {
     @Published var muted: Bool
     @Published var pauseOnBattery: Bool
     @Published var launchAtLogin = false
+    @Published var automaticUpdateChecks = false
     @Published var rotationMinutes = 0
     @Published var rotationShuffle = false
     @Published var libraryCount: Int
@@ -75,6 +76,7 @@ struct SettingsView: View {
     let onMuteChange: (Bool) -> Void
     let onBatteryPauseChange: (Bool) -> Void
     let onLaunchAtLoginChange: (Bool) -> Void
+    let onAutomaticUpdatesChange: (Bool) -> Void
     let onRotationChange: (Int) -> Void
     let onShuffleChange: (Bool) -> Void
     let onUninstall: () -> Void
@@ -205,6 +207,20 @@ struct SettingsView: View {
                         set: { value in
                             model.launchAtLogin = value
                             onLaunchAtLoginChange(value)
+                        }
+                    )
+                )
+
+                sectionDivider
+
+                settingRow(
+                    title: "Check for updates automatically",
+                    subtitle: "Looks for a new version once a day and asks before installing.",
+                    isOn: Binding(
+                        get: { model.automaticUpdateChecks },
+                        set: { value in
+                            model.automaticUpdateChecks = value
+                            onAutomaticUpdatesChange(value)
                         }
                     )
                 )
@@ -559,6 +575,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onMuteChange: @escaping (Bool) -> Void,
         onBatteryPauseChange: @escaping (Bool) -> Void,
         onLaunchAtLoginChange: @escaping (Bool) -> Void,
+        onAutomaticUpdatesChange: @escaping (Bool) -> Void,
         onRotationChange: @escaping (Int) -> Void,
         onShuffleChange: @escaping (Bool) -> Void,
         onUninstall: @escaping () -> Void,
@@ -573,6 +590,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             onMuteChange: onMuteChange,
             onBatteryPauseChange: onBatteryPauseChange,
             onLaunchAtLoginChange: onLaunchAtLoginChange,
+            onAutomaticUpdatesChange: onAutomaticUpdatesChange,
             onRotationChange: onRotationChange,
             onShuffleChange: onShuffleChange,
             onUninstall: onUninstall,
@@ -587,7 +605,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 720, height: 660))
+        window.setContentSize(NSSize(width: 720, height: 730))
         window.minSize = NSSize(width: 660, height: 480)
         window.center()
         window.setFrameAutosaveName("MonkeWallSettingsWindow")
