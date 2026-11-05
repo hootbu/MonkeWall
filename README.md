@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white" alt="macOS 13+">
   <img src="https://img.shields.io/badge/Swift-native-F05138?logo=swift&logoColor=white" alt="Native Swift">
   <img src="https://img.shields.io/badge/status-hobby%20project-lightgrey" alt="Hobby project">
-  <img src="https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey" alt="License: all rights reserved">
+  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="License: PolyForm Noncommercial">
 </p>
 
 <details>
@@ -114,7 +114,7 @@ MonkeWall hobi amacıyla geliştirdiğim bir projedir. Apple ile herhangi bir ba
 
 ## Lisans
 
-© 2026 Emir Yorgun. Tüm hakları saklıdır. Ticari dağıtım için izin gerekir.
+© 2026 Emir Yorgun. [PolyForm Noncommercial 1.0.0](LICENSE) ile lisanslıdır: kişisel ve ticari olmayan kullanım, değiştirme ve paylaşım serbesttir. Ticari kullanım için izin gerekir.
 
 <hr>
 </details>
@@ -214,4 +214,4 @@ MonkeWall is a hobby project. It has no connection to Apple and carries no endor
 
 ## License
 
-© 2026 Emir Yorgun. All rights reserved. Commercial distribution requires permission.
+© 2026 Emir Yorgun. Licensed under [PolyForm Noncommercial 1.0.0](LICENSE): personal and noncommercial use, modification and sharing are allowed. Commercial use requires permission.
