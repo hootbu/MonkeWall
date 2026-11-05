@@ -40,7 +40,7 @@ macOS duvar kağıdı olarak yalnızca Apple'ın kendi aerial videolarını oyna
 
 Apple Silicon bir Mac'te macOS 13 veya üzeri gerekir.
 
-1. [Releases](https://github.com/hootbu/MonkeWall/releases/latest) sayfasından zip dosyasını indirip açın.
+1. [MonkeWall.zip](https://github.com/hootbu/MonkeWall/releases/latest/download/MonkeWall.zip) dosyasını indirip açın.
 2. `MonkeWall.app`'i Uygulamalar klasörüne taşıyın.
 3. Açmayı deneyin. MonkeWall notarize olmadığı için macOS ilk açılışı engeller.
 4. Sistem Ayarları > Gizlilik ve Güvenlik bölümünde **Yine de Aç** düğmesine basın.
@@ -140,7 +140,7 @@ macOS will only play Apple's own aerial videos as your wallpaper. MonkeWall play
 
 You need macOS 13 or later on Apple Silicon.
 
-1. Download the zip from [Releases](https://github.com/hootbu/MonkeWall/releases/latest) and open it.
+1. Download [MonkeWall.zip](https://github.com/hootbu/MonkeWall/releases/latest/download/MonkeWall.zip) and open it.
 2. Move `MonkeWall.app` to your Applications folder.
 3. Try to open it. MonkeWall isn't notarized, so macOS blocks the first launch.
 4. Go to System Settings > Privacy & Security and click **Open Anyway**.
