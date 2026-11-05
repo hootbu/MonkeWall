@@ -27,7 +27,7 @@ ditto -c -k --sequesterRsrc --keepParent MonkeWall.app "$DIST/$ZIP"
 
 "$SPARKLE/bin/generate_keys" -x "$DIST/key"
 SIGNATURE="$("$SPARKLE/bin/sign_update" --ed-key-file "$DIST/key" "$DIST/$ZIP")"
-rm -f "$DIST/key"
+cp "$DIST/$ZIP" "$DIST/MonkeWall.zip"
 
 cat > "$DIST/appcast.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -47,7 +47,11 @@ cat > "$DIST/appcast.xml" <<EOF
 </rss>
 EOF
 
-gh release create "$TAG" "$DIST/$ZIP" "$DIST/appcast.xml" \
+"$SPARKLE/bin/sign_update" --ed-key-file "$DIST/key" "$DIST/appcast.xml"
+"$SPARKLE/bin/sign_update" --verify --ed-key-file "$DIST/key" "$DIST/appcast.xml"
+rm -f "$DIST/key"
+
+gh release create "$TAG" "$DIST/$ZIP" "$DIST/MonkeWall.zip" "$DIST/appcast.xml" \
     --target "$(git rev-parse HEAD)" \
     --title "MonkeWall $VERSION" \
     --notes "$NOTES"

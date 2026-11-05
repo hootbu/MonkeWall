@@ -39,5 +39,9 @@
 	<string>https://github.com/hootbu/MonkeWall/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>ntBU6v17u5ggCDPYyG9XoHN/K11l78ftgVJckJHgkOE=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>
