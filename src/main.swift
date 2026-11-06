@@ -82,7 +82,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
     private var screensaverActive = false
     private var sessionActive = true
     private var powerPaused = false
-    private var playbackFailed = false
+    private var failedURLs: Set<URL> = []
     private var refreshWorkItem: DispatchWorkItem?
     private var persistenceTimer: Timer?
 
@@ -449,20 +449,18 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
             return
         }
 
-        guard !playbackFailed else { return }
-
         guard FileManager.default.fileExists(atPath: videoURL.path) else {
             appLog("Video not found at \(videoURL.path)")
             setStatusIcon(warning: true)
             return
         }
-        setStatusIcon(warning: false)
 
         let windowLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
 
         for screen in NSScreen.screens {
+            let url = videoURL(forScreen: screen.displayKey)
+            guard !failedURLs.contains(url) else { continue }
             let surface = DesktopSurface(screen: screen, level: windowLevel)
-            let url = videoURL(forScreen: surface.screenKey)
             surface.show(loopingPlayer(for: url).player, url: url, animated: false) {}
             if sessionActive {
                 surface.window.orderFrontRegardless()
@@ -471,13 +469,14 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 
             appLog("Window created: \(screen.frame) level=\(windowLevel.rawValue)")
         }
+        setStatusIcon(warning: surfaces.count < NSScreen.screens.count)
 
         updateMuting()
         applyPlayback()
     }
 
     private func refreshSurfaces() {
-        guard !surfaces.isEmpty else {
+        guard surfaces.count == NSScreen.screens.count else {
             rebuildWindows()
             return
         }
@@ -532,10 +531,11 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
     }
 
     private func handlePlaybackFailure(_ error: Error?, url: URL) {
-        guard !playbackFailed else { return }
-        appLog("Video playback failed: \(String(describing: error))")
-        playbackFailed = true
-        teardownWindows()
+        guard failedURLs.insert(url).inserted else { return }
+        appLog("Video playback failed: \(url.path) \(String(describing: error))")
+        surfaces.filter { $0.videoURL == url }.forEach { $0.window.orderOut(nil) }
+        surfaces.removeAll { $0.videoURL == url }
+        players[url] = nil
         setStatusIcon(warning: true)
         showAlert(
             L("Video Couldn't Be Played"),
@@ -678,7 +678,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 
     private func selectVideo(_ item: WallpaperItem) {
         library.clearScreenAssignments()
-        playbackFailed = false
+        failedURLs.remove(library.fileURL(for: item))
         if item.id == library.activeID {
             refreshSurfaces()
         } else {
@@ -688,7 +688,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 
     private func assignVideo(_ item: WallpaperItem, toScreen key: String) {
         library.assign(item, toScreen: key)
-        playbackFailed = false
+        failedURLs.remove(library.fileURL(for: item))
         refreshSurfaces()
     }
 
@@ -721,7 +721,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
             return
         }
 
-        playbackFailed = false
+        failedURLs.remove(fileURL)
         videoURL = fileURL
         library.setActive(item)
         config.video = "library/\(item.file)"
@@ -775,15 +775,9 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
         }
 
         library.prepareLockSidecar(for: item) { [weak self] generated in
-            guard let self else { return }
-            guard self.config.lockScreenVideo else {
-                completion?(false)
-                return
-            }
-            guard self.library.activeID == item.id else {
-                completion?(false)
-                return
-            }
+            guard let self,
+                  self.config.lockScreenVideo,
+                  self.library.activeID == item.id else { return }
 
             let source = generated ?? self.library.fileURL(for: item)
             let installed = AerialsManager.shared.install(videoURL: source, force: true, select: select)
@@ -1020,7 +1014,7 @@ final class WallpaperAppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegat
 
     @objc private func reloadWallpaper() {
         loadConfig()
-        playbackFailed = false
+        failedURLs.removeAll()
 
         if let activeURL = library.bootstrap(currentVideoURL: videoURL) {
             videoURL = activeURL
