@@ -432,8 +432,8 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 infoRow("Developer", "Emir Yorgun (hootbu)")
-                infoRow("Copyright", L("© 2026 Emir Yorgun. All rights reserved."))
-                infoRow("License", L("All rights reserved. Commercial distribution requires permission."))
+                infoRow("Copyright", "© 2026 Emir Yorgun")
+                infoRow("License", "PolyForm Noncommercial 1.0.0")
                 infoRow("System", ProcessInfo.processInfo.operatingSystemVersionString)
             }
 
@@ -469,7 +469,7 @@ struct SettingsView: View {
 
             Spacer(minLength: 12)
 
-            Picker("", selection: Binding(
+            Picker("Change video automatically", selection: Binding(
                 get: { model.rotationMinutes },
                 set: { value in
                     model.rotationMinutes = value
@@ -539,7 +539,7 @@ struct SettingsView: View {
 
             Spacer(minLength: 12)
 
-            Toggle("", isOn: isOn)
+            Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(BrandTheme.accent)

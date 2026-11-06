@@ -82,8 +82,6 @@
 "This can't be undone." = "Bu işlem geri alınamaz.";
 "Version %@ (%@)" = "Sürüm %@ (%@)";
 "1 video" = "1 video";
-"© 2026 Emir Yorgun. All rights reserved." = "© 2026 Emir Yorgun. Tüm hakları saklıdır.";
-"All rights reserved. Commercial distribution requires permission." = "Tüm hakları saklıdır. Ticari dağıtım için izin gerekir.";
 "Launch at login" = "Girişte başlat";
 "Starts MonkeWall when you log in to your Mac." = "Mac'e giriş yaptığında MonkeWall'u başlatır.";
 "Pauses the video whenever another app is in front, even if the desktop is still visible. When off, it only pauses once the desktop is completely covered." = "Başka bir uygulama öndeyken, masaüstü görünse bile videoyu duraklatır. Kapalıyken video yalnızca masaüstü tamamen kapandığında durur.";
