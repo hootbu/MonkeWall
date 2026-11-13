@@ -14,21 +14,43 @@ extension NSScreen {
 final class LoopingPlayer {
     let player = AVQueuePlayer()
 
-    private let looper: AVPlayerLooper
+    private var looper: AVPlayerLooper?
     private var statusObservation: NSKeyValueObservation?
 
     init(url: URL, onFailure: @escaping (Error?) -> Void) {
         player.preventsDisplaySleepDuringVideoPlayback = false
-        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
-        statusObservation = looper.observe(\.status, options: [.new]) { observed, _ in
-            guard observed.status == .failed else { return }
-            let error = observed.error
-            DispatchQueue.main.async { onFailure(error) }
+        let item = AVPlayerItem(url: url)
+        Task { @MainActor [weak self] in
+            if #available(macOS 15, *) {
+                item.videoComposition = await Self.sRGBComposition(for: item.asset)
+            }
+            self?.startLooping(item, onFailure: onFailure)
         }
     }
 
     deinit {
         player.pause()
+    }
+
+    @available(macOS 15, *)
+    private static func sRGBComposition(for asset: AVAsset) async -> AVVideoComposition? {
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let format = try? await track.load(.formatDescriptions).first else { return nil }
+        let transfer = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        guard transfer == nil || transfer == AVVideoTransferFunction_ITU_R_709_2,
+              let composition = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset) else { return nil }
+        composition.colorTransferFunction = AVVideoTransferFunction_IEC_sRGB
+        return composition
+    }
+
+    private func startLooping(_ item: AVPlayerItem, onFailure: @escaping (Error?) -> Void) {
+        let looper = AVPlayerLooper(player: player, templateItem: item)
+        statusObservation = looper.observe(\.status, options: [.new]) { observed, _ in
+            guard observed.status == .failed else { return }
+            let error = observed.error
+            DispatchQueue.main.async { onFailure(error) }
+        }
+        self.looper = looper
     }
 }
 
