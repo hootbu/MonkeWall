@@ -39,6 +39,9 @@ final class AerialsManager {
     private var entriesURL: URL {
         aerialsRoot.appendingPathComponent("manifest/entries.json")
     }
+    private var systemEntriesURL: URL {
+        URL(fileURLWithPath: "/System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/Resources/entries.json")
+    }
     private var storeURL: URL {
         home.appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
     }
@@ -98,6 +101,7 @@ final class AerialsManager {
                 appLog("Aerials: video copied (\(sourceSize) bytes)")
             }
 
+            let manifestOutdated = manifestVersion(at: entriesURL) < manifestVersion(at: systemEntriesURL)
             guard updateEntries() else { return false }
 
             let alreadySelected = currentIdleAssetID() == assetID
@@ -107,7 +111,7 @@ final class AerialsManager {
                 guard updateStore() else { return false }
             }
 
-            if videoChanged || shouldSelect {
+            if videoChanged || shouldSelect || manifestOutdated {
                 restartWallpaperAgent()
             }
 
@@ -237,25 +241,30 @@ final class AerialsManager {
 
     // MARK: - entries.json
 
-    private func readEntries() -> [String: Any]? {
-        guard let data = try? Data(contentsOf: entriesURL),
+    private func readEntries(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any] else { return nil }
         return dictionary
     }
 
+    private func manifestVersion(at url: URL) -> Int {
+        readEntries(at: url)?["version"] as? Int ?? 0
+    }
+
     private func entriesContainAsset() -> Bool {
-        guard let entries = readEntries(),
+        guard let entries = readEntries(at: entriesURL),
               let assets = entries["assets"] as? [[String: Any]] else { return false }
         return assets.contains { ($0["id"] as? String) == assetID }
     }
 
     private func updateEntries() -> Bool {
-        var entries = readEntries() ?? [
+        var entries = readEntries(at: entriesURL) ?? [
             "version": 1,
             "categories": [Any](),
             "assets": [Any]()
         ]
+        entries["version"] = max(entries["version"] as? Int ?? 0, manifestVersion(at: systemEntriesURL))
         var categories = entries["categories"] as? [[String: Any]] ?? []
         var assets = entries["assets"] as? [[String: Any]] ?? []
 
@@ -315,7 +324,7 @@ final class AerialsManager {
     }
 
     private func removeFromEntries() {
-        guard var entries = readEntries() else { return }
+        guard var entries = readEntries(at: entriesURL) else { return }
         if var categories = entries["categories"] as? [[String: Any]] {
             categories.removeAll { ($0["id"] as? String) == categoryID }
             entries["categories"] = categories
